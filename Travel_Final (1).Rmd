@@ -1,0 +1,160 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r}
+library(readr)
+library(dplyr)
+library(randomForest)
+library(ggplot2)
+library(Hmisc)
+library(party)
+library(MLmetrics)
+library(xgboost)
+library(readr)
+library(stringr)
+library(caret)
+library(devtools)
+library(mlr)
+library(parallel)
+library(parallelMap)
+
+setwd('D://Uconn//competitions//Travellers//')
+data_train=read.csv("uconn_comp_2018_train.csv",colClasses = c("numeric","numeric" ,"factor" , "factor" , "numeric" ,"numeric" , "factor" , "factor" , "factor" , "factor" , "factor" , "factor" , "numeric" ,"factor","factor" ,"numeric","numeric","factor","numeric","factor","numeric","factor"), sep=',' )
+glimpse(data_train)
+data_test=read.csv("uconn_comp_2018_test.csv",colClasses = c("numeric","numeric" ,"factor" , "factor" , "numeric" ,"numeric" , "factor" , "factor" , "factor" , "factor" , "factor" , "factor" , "numeric" ,"factor","factor" ,"numeric","numeric","factor","numeric","factor","numeric","factor") , sep = ',')
+
+lf=ceiling(nrow(data_train)*0.70)
+data_train$fraud=factor(data_train$fraud)
+train <- data_train[1:lf, ]
+test <- data_train[lf:nrow(data_train), ]
+length(train)
+
+naRows <- apply(train[ c(2:19,22) ], 1, function(x) any(is.na(x)))
+dtrain= train[!naRows,]
+
+naRows <- apply(test[ c(2:19,22) ], 1, function(x) any(is.na(x)))
+dtest=test[!naRows,]
+
+naRows <- apply(data_test[ c(2:19,22) ], 1, function(x) any(is.na(x)))
+ftest=data_test[!naRows,]
+data_test[naRows,]
+```
+
+```{r}
+set.seed(1001)
+vars=c("gender","marital_status","high_education_ind","address_change_ind","living_status","accident_site","past_num_of_claims","witness_present_ind","channel","policy_report_filed_ind","age_of_vehicle","vehicle_category","vehicle_color")
+Dummydata=dtrain[,-which(names(dtrain) %in% c("claim_number","channel", "vehicle_category" , "vehicle_color"))]
+dummies <- vtreat::designTreatmentsZ(Dummydata, vars, 
+                                   minFraction= 0,
+                                   verbose=FALSE)
+
+lrn <- makeLearner("classif.xgboost",predict.type = "prob")
+lrn$par.vals <- list( objective="binary:logistic", eval_metric="error")
+params <- makeParamSet( makeDiscreteParam("booster",values = c("gbtree")), makeIntegerParam("max_depth",lower = 1L,upper = 20L),makeIntegerParam("nrounds",lower=300,upper=600),makeNumericParam("lambda",lower=0.3,upper=0.60),makeNumericParam("gamma",lower=0,upper=10),makeNumericParam("eta", lower = 0, upper = 1),                        makeNumericParam("min_child_weight",lower = 1L,upper = 10L), makeNumericParam("subsample",lower = 0.3,upper = 1),makeNumericParam("max_delta_step",lower = 1,upper = 10), makeNumericParam("colsample_bytree",lower = 0.2,upper = 1))
+
+rdesc <- makeResampleDesc("CV",stratify = T,iters=5L)
+ctrl <- makeTuneControlRandom(maxit = 100L)
+
+##trainTask <- normalizeFeatures(trainTask1,method = "standardize")
+
+Traindummy=as.data.frame(cbind(vtreat::prepare(dummies,dtrain),dtrain$fraud,dtrain$age_of_driver,dtrain$safty_rating,dtrain$annual_income,dtrain$liab_prct,dtrain$claim_est_payout,dtrain$vehicle_price,dtrain$vehicle_weight))
+length(Traindummy)
+names(Traindummy)[35]="vehicle_weight"
+names(Traindummy)[34]="vehicle_price"
+names(Traindummy)[33]="claim_est_payout"
+names(Traindummy)[32]="liab_prct"
+names(Traindummy)[31]="annual_income"
+names(Traindummy)[30]="safty_rating"
+names(Traindummy)[29]="age_of_driver"
+names(Traindummy)[28]="fraud"
+
+Testdummy=as.data.frame(cbind(vtreat::prepare(dummies,dtest),dtest$fraud,dtest$age_of_driver,dtest$safty_rating,dtest$annual_income,dtest$liab_prct,dtest$claim_est_payout,dtest$vehicle_price,dtest$vehicle_weight))
+
+names(Testdummy)[35]="vehicle_weight"
+names(Testdummy)[34]="vehicle_price"
+names(Testdummy)[33]="claim_est_payout"
+names(Testdummy)[32]="liab_prct"
+names(Testdummy)[31]="annual_income"
+names(Testdummy)[30]="safty_rating"
+names(Testdummy)[29]="age_of_driver"
+names(Testdummy)[28]="fraud"
+View(Traindummy[c(4,7:51)])
+
+fTestdummy=as.data.frame(cbind(vtreat::prepare(dummies,ftest),ftest$fraud,ftest$age_of_driver,ftest$safty_rating,ftest$annual_income,ftest$liab_prct,ftest$claim_est_payout,ftest$vehicle_price,ftest$vehicle_weight))
+
+names(fTestdummy)[51]="vehicle_weight"
+names(fTestdummy)[50]="vehicle_price"
+names(fTestdummy)[49]="claim_est_payout"
+names(fTestdummy)[48]="liab_prct"
+names(fTestdummy)[47]="annual_income"
+names(fTestdummy)[46]="safty_rating"
+names(fTestdummy)[45]="age_of_driver"
+names(fTestdummy)[44]="fraud"
+View(fTestdummy[c(4,7:51)])
+
+
+trainTask <- makeClassifTask(data=Traindummy ,target = "fraud")
+
+testTask <- makeClassifTask(data=Testdummy ,target = "fraud")
+ftestTask <- makeClassifTask(data=fTestdummy ,target = "fraud")
+parallelStartSocket(cpus = detectCores())
+
+##makeSMOTEWrapper(lrn, sw.rate = 1, sw.nn = 5L,sw.standardize = TRUE, sw.alt.logic = FALSE)
+
+mytune <- tuneParams(learner = lrn, task = trainTask, resampling = rdesc, measures = acc, par.set = params, control = ctrl, show.info = T)
+mytune
+lrn_tune <- setHyperPars(lrn,par.vals = mytune$x)
+xgmodel <- train(learner = lrn_tune,task = trainTask)
+xgmodel
+
+xgpred <- predict(xgmodel,testTask,type="prob")
+confusionMatrix(xgpred[["data"]][["response"]],xgpred[["data"]][["truth"]])
+
+ftest$predict=xgpred[["data"]][["prob.1"]]
+ write.csv(ftest,"df.csv")
+View(xgpred)
+getFeatureImportance(xgmodel)
+
+length(xgpred[["data"]][["prob.1"]])
+generateFeatureImportanceData(trainTask, method = "permutation.importance",
+lrn, features = getTaskFeatureNames(trainTask), interaction = FALSE,nmc = 50L, replace = TRUE, local = FALSE)
+generateFeatureImportance(trainTask, method = "permutation.importance",
+lrn, features = getTaskFeatureNames(trainTask), interaction = FALSE,nmc = 50L, replace = TRUE, local = FALSE)
+library("pROC")
+auc(as.numeric(xgpred$data$response),as.numeric(xgpred$data$truth))
+plot(roc(as.numeric(xgpred$data$response),as.numeric(xgpred$data$truth)))
+getPredictionProbabilities(xgpred)
+# With a roc object:
+rocobj <- roc(xgpred$data$response,xgpred$data$truth)
+
+parallelStop()
+ls(list=testtask)
+
+xgb.plot.tree(model = xgpred, trees = 0, show_node_id = TRUE)
+xgb.importance(colnames(dtest_X), model = xgb)
+```
+
+
+```{r}
+eval_metric = "auc",
+          max_depth = 14,
+          eta =0.01,
+          gamma = 0.561, 
+          subsample = 0.961,
+          colsample_bytree = 0.606, 
+          min_child_weight = 2.04,
+          max_delta_step = sample(1:10, 1)
+
+xgb_params <- makeParamSet(
+ makeIntegerParam("nrounds",lower=200,upper=600),
+makeIntegerParam("max_depth",lower=3,upper=20),
+makeNumericParam("lambda",lower=0.55,upper=0.60),
+makeNumericParam("eta", lower = 0.001, upper = 0.5),
+makeNumericParam("subsample", lower = 0.10, upper = 0.80),
+makeNumericParam("min_child_weight",lower=1,upper=5),
+makeNumericParam("colsample_bytree",lower = 0.2,upper = 0.8)
+)
+```
+
+
